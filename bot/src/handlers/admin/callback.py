@@ -5,7 +5,6 @@ src/handlers/admin/callback.py
 
 import asyncio
 import logging
-import re
 
 from aiogram import Router, Bot, F
 from aiogram.fsm.context import FSMContext
@@ -25,34 +24,11 @@ from src.userbot.client import userbot
 from src.userbot.publisher import publish_post
 from src.utils.db import session
 from src.utils.ai import is_enabled, rewrite_text, get_model
+from src.utils.tg_format import md_to_html, split_html_safe, split_caption_and_tail
 from src.utils.utils import safe_delete_message
 
 router = Router()
 logger = logging.getLogger(__name__)
-
-
-def normalize_ai_text(text: str) -> str:
-    """Делает текст похожим на обычный телеграм-пост: без ** и без [текст](url)"""
-    if not text:
-        return ""
-
-    t = text.strip()
-
-    # **жирный** -> жирный
-    t = re.sub(r"\*\*(.*?)\*\*", r"\1", t)
-
-    # [текст](url) -> текст\nurl
-    t = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1\n\2", t)
-
-    # [текст] url  или [текст]url -> текст\nurl
-    t = re.sub(r"\[([^\]]+)\]\s*(https?://\S+)", r"\1\n\2", t)
-
-    # остатки [слово] -> слово
-    t = re.sub(r"\[([^\]]+)\](?!\()", r"\1", t)
-
-    return t
-
-
 
 def has_real_file(msg) -> bool:
     """Проверяет, есть ли реальный файл"""
@@ -231,7 +207,7 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
 
                     # Переписываем
                     rewritten = await rewrite_text(post.original_text or "", mode)
-                    rewritten = normalize_ai_text(rewritten)
+                    rewritten = md_to_html(rewritten)
 
                     # Сохраняем переписанный текст
                     post.rewritten_text = rewritten
@@ -391,24 +367,19 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
 
 
 async def send_preview_via_bot(bot: Bot, admin_id: int, text: str, source_chat_id: int, source_message_id: int, has_media: bool) -> list[int]:
-    """
-    Отправляет превью поста админу через бота.
-    Возвращает список ID отправленных сообщений.
-    """
-    msg_ids = []
+    msg_ids: list[int] = []
 
     try:
+        html_text = md_to_html(text)
+        caption, tail = split_caption_and_tail(html_text, caption_limit=1024)
+
         if has_media and source_chat_id and source_message_id and userbot.client:
             msg = await userbot.client.get_messages(source_chat_id, ids=source_message_id)
 
             if msg and msg.grouped_id:
-                # Альбом
                 grouped_id = msg.grouped_id
                 messages = await userbot.client.get_messages(
-                    source_chat_id,
-                    limit=15,
-                    max_id=msg.id + 10,
-                    min_id=msg.id - 5
+                    source_chat_id, limit=15, max_id=msg.id + 10, min_id=msg.id - 5
                 )
                 album_msgs = [m for m in messages if m.grouped_id == grouped_id and has_real_file(m)]
                 album_msgs.sort(key=lambda m: m.id)
@@ -417,60 +388,53 @@ async def send_preview_via_bot(bot: Bot, admin_id: int, text: str, source_chat_i
                     media_group = []
                     for i, m in enumerate(album_msgs):
                         file_bytes = await userbot.client.download_media(m, file=bytes)
-                        if file_bytes:
-                            caption = text[:1024] if i == 0 and text else None
-                            input_file = BufferedInputFile(file_bytes, filename=f"media_{i}")
+                        if not file_bytes:
+                            continue
 
-                            if m.photo:
-                                media_group.append(InputMediaPhoto(media=input_file, caption=caption))
-                            elif m.video:
-                                media_group.append(InputMediaVideo(media=input_file, caption=caption))
-                            else:
-                                media_group.append(InputMediaDocument(media=input_file, caption=caption))
+                        input_file = BufferedInputFile(file_bytes, filename=f"media_{i}")
+                        cap = caption if i == 0 and caption else None
+
+                        if m.photo:
+                            media_group.append(InputMediaPhoto(media=input_file, caption=cap, parse_mode="HTML"))
+                        elif m.video:
+                            media_group.append(InputMediaVideo(media=input_file, caption=cap, parse_mode="HTML"))
+                        else:
+                            media_group.append(InputMediaDocument(media=input_file, caption=cap, parse_mode="HTML"))
 
                     if media_group:
                         result = await bot.send_media_group(admin_id, media_group)
                         msg_ids.extend([m.message_id for m in result])
 
-                        if text and len(text) > 1024:
-                            text_msg = await bot.send_message(
-                                admin_id, text, disable_web_page_preview=True
-                            )
-                            msg_ids.append(text_msg.message_id)
+                        # хвост текста отдельными сообщениями (без ломания HTML)
+                        for chunk in split_html_safe(tail, limit=4096):
+                            m = await bot.send_message(admin_id, chunk, parse_mode="HTML", disable_web_page_preview=True)
+                            msg_ids.append(m.message_id)
 
                         return msg_ids
 
             elif msg and has_real_file(msg):
-                # Одиночное медиа
                 file_bytes = await userbot.client.download_media(msg, file=bytes)
                 if file_bytes:
                     input_file = BufferedInputFile(file_bytes, filename="media")
-                    caption = text[:1024] if text else None
-
                     if msg.photo:
-                        result = await bot.send_photo(admin_id, input_file, caption=caption)
+                        res = await bot.send_photo(admin_id, input_file, caption=caption or None, parse_mode="HTML")
                     elif msg.video:
-                        result = await bot.send_video(admin_id, input_file, caption=caption)
+                        res = await bot.send_video(admin_id, input_file, caption=caption or None, parse_mode="HTML")
                     else:
-                        result = await bot.send_document(admin_id, input_file, caption=caption)
+                        res = await bot.send_document(admin_id, input_file, caption=caption or None, parse_mode="HTML")
 
-                    msg_ids.append(result.message_id)
+                    msg_ids.append(res.message_id)
 
-                    tail = text[1024:].strip() if text and len(text) > 1024 else ""
-                    if tail:
-                        text_msg = await bot.send_message(
-                            admin_id, tail, disable_web_page_preview=True
-                        )
-                        msg_ids.append(text_msg.message_id)
+                    for chunk in split_html_safe(tail, limit=4096):
+                        m = await bot.send_message(admin_id, chunk, parse_mode="HTML", disable_web_page_preview=True)
+                        msg_ids.append(m.message_id)
 
                     return msg_ids
 
-        # Только текст
-        if text:
-            result = await bot.send_message(
-                admin_id, text, disable_web_page_preview=True
-            )
-            msg_ids.append(result.message_id)
+        # только текст
+        for chunk in split_html_safe(html_text, limit=4096):
+            m = await bot.send_message(admin_id, chunk, parse_mode="HTML", disable_web_page_preview=True)
+            msg_ids.append(m.message_id)
 
     except Exception as e:
         logger.error(f"Failed to send preview: {e}")
