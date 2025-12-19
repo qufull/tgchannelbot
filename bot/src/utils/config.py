@@ -41,5 +41,8 @@ class Settings(BaseSettings):
     def DATABASE_URL_asyncpg(self):
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB_NAME}"
 
+    @property
+    def userbot_enabled(self) -> bool:
+        return bool(self.API_ID and self.API_HASH and self.PHONE)
 
 settings = Settings()

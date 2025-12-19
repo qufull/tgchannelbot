@@ -3,23 +3,22 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, Union
 
 from aiogram import BaseMiddleware
-from aiogram.types import Update, Message, CallbackQuery
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from aiogram.types import Update, Message, CallbackQuery, TelegramObject
 
 from src.utils.config import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class DataBaseMiddleware(BaseMiddleware):  # pylint: disable=too-few-public-methods
-    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]):
+    def __init__(self, sessionmaker):
         super().__init__()
         self.sessionmaker = sessionmaker
 
     async def __call__(
         self,
-        handler: Callable[[Update, Dict[str, Any]], Awaitable[Any]],
-        event: Update,
-        data: Dict[str, Any],
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any]
     ) -> Any:
         async with self.sessionmaker() as db:
             data["db"] = db

@@ -14,7 +14,7 @@ class Post(Base):
     media_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     original_text: Mapped[str] = mapped_column(Text, default="")
-    rewritten_text: Mapped[str] = mapped_column(Text, default="")
+    rewritten_text: Mapped[str] = mapped_column(Text, nullable=True)
 
     notified: Mapped[int] = mapped_column(Integer, default=0)  # 0/1
 

@@ -1,289 +1,218 @@
+"""
+src/handlers/admin/sources.py
+Управление источниками (каналами для мониторинга)
+"""
+
+import logging
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import CallbackQuery, Message
 
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.keyboards.admin_channels import sources_menu_kb, cancel_kb, sources_list_kb, source_detail_kb, \
-    confirm_delete_kb
+from src.keyboards.admin_channels import sources_menu_kb, sources_list_kb, source_actions_kb
+from src.keyboards.inline import admin_menu_kb
 from src.models.channel import Channel
-from src.states.admin_channel import SourceStates
+from src.states.admin_states import AdminStates
 from src.userbot.client import userbot
 
 router = Router()
+logger = logging.getLogger(__name__)
 
-@router.callback_query(F.data == "adm:sources")
-async def open_sources_menu(c: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await c.message.edit_text(
-        "📡 <b>Источники для мониторинга</b>\n\n"
-        "Юзербот следит за этими каналами и форвардит новые посты в инбокс.",
-        reply_markup=sources_menu_kb(),
-        parse_mode="HTML"
-    )
-    await c.answer()
-
-
-@router.callback_query(F.data == "src:menu")
-async def sources_menu(c: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await c.message.edit_text(
-        "📡 <b>Источники для мониторинга</b>\n\n"
-        "Юзербот следит за этими каналами и форвардит новые посты в инбокс.",
-        reply_markup=sources_menu_kb(),
-        parse_mode="HTML"
-    )
-    await c.answer()
-
-
-@router.callback_query(F.data == "src:back_admin")
-async def back_to_admin(c: CallbackQuery, state: FSMContext):
-    from src.keyboards.inline import admin_menu_kb
-    await state.clear()
-    await c.message.edit_text("Админка:", reply_markup=admin_menu_kb())
-    await c.answer()
-
-
-# ─────────────────────────────────────────────────────────────
-# Список источников
-# ─────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "src:list")
 async def list_sources(c: CallbackQuery, db: AsyncSession):
+    """Список источников"""
     result = await db.execute(
-        select(Channel).where(Channel.role == "source").order_by(Channel.id.desc())
+        select(Channel).where(Channel.role == "source")
     )
     sources = result.scalars().all()
 
     if not sources:
         await c.message.edit_text(
-            "📋 <b>Источники</b>\n\n"
-            "Список пуст. Добавьте каналы для мониторинга.",
+            "📡 <b>Источники</b>\n\n"
+            "Список пуст. Добавьте канал для мониторинга.",
             reply_markup=sources_menu_kb(),
             parse_mode="HTML"
         )
     else:
-        active = sum(1 for s in sources if s.is_active)
         await c.message.edit_text(
-            f"📋 <b>Источники</b>\n\n"
-            f"Всего: {len(sources)} (активных: {active})",
+            "📡 <b>Источники</b>\n\n"
+            "Выберите канал для управления:",
             reply_markup=sources_list_kb(sources),
             parse_mode="HTML"
         )
     await c.answer()
 
 
-@router.callback_query(F.data.startswith("src:page:"))
-async def sources_page(c: CallbackQuery, db: AsyncSession):
-    page = int(c.data.split(":")[2])
-    result = await db.execute(
-        select(Channel).where(Channel.role == "source").order_by(Channel.id.desc())
-    )
-    sources = result.scalars().all()
-    await c.message.edit_reply_markup(reply_markup=sources_list_kb(sources, page))
-    await c.answer()
-
-
-# ─────────────────────────────────────────────────────────────
-# Добавление источника
-# ─────────────────────────────────────────────────────────────
-
 @router.callback_query(F.data == "src:add")
 async def add_source_start(c: CallbackQuery, state: FSMContext):
-    await state.set_state(SourceStates.wait_channel)
+    """Начало добавления источника"""
+    await state.set_state(AdminStates.wait_source_link)
     await c.message.edit_text(
-        "➕ <b>Добавление источника</b>\n\n"
-        "Отправьте ссылку или @username канала:\n\n"
-        "• <code>@channel</code>\n"
-        "• <code>https://t.me/channel</code>\n"
-        "• <code>https://t.me/c/1234567890/1</code>\n\n"
-        "⚠️ Юзербот должен быть подписан на канал!",
-        reply_markup=cancel_kb(),
+        "📡 <b>Добавление источника</b>\n\n"
+        "Отправьте ссылку на канал:\n\n"
+        "• <code>@channel</code> — публичный канал\n"
+        "• <code>t.me/channel</code> — публичный канал\n"
+        "• <code>t.me/+ABC123</code> — приватный канал\n"
+        "• <code>t.me/joinchat/ABC123</code> — приватный канал\n\n"
+        "Юзербот автоматически подпишется на канал.",
         parse_mode="HTML"
     )
     await c.answer()
 
 
-@router.message(SourceStates.wait_channel)
+@router.message(AdminStates.wait_source_link)
 async def add_source_process(m: Message, state: FSMContext, db: AsyncSession):
-    text = m.text.strip()
+    """Обработка ссылки на источник"""
+    link = m.text.strip()
 
-    # Пробуем получить инфо через юзербот
-    info = await userbot.get_channel_info(text)
+    if not link:
+        await m.answer("❌ Отправьте ссылку на канал")
+        return
 
-    if info:
-        chat_id = info["chat_id"]
-        title = info["title"]
-    else:
-        # Парсим вручную для приватных каналов
-        chat_id = None
-        title = ""
+    await m.answer("⏳ Подключаюсь к каналу...")
 
-        if "t.me/c/" in text:
-            try:
-                parts = text.split("/c/")[1].split("/")
-                chat_id = -int("100" + parts[0])
-            except:
-                await m.answer("❌ Неверный формат. Попробуйте ещё раз:")
-                return
-        else:
-            await m.answer(
-                "❌ Не удалось найти канал.\n\n"
-                "Убедитесь, что юзербот подписан на этот канал.",
-                reply_markup=sources_menu_kb()
-            )
-            await state.clear()
-            return
+    # Всегда вызываем join_channel — он сам разберётся приватный или публичный
+    info = await userbot.join_channel(link)
 
-    # Проверка на дубликат
-    exists = await db.execute(
-        select(Channel).where(Channel.chat_id == chat_id)
-    )
-    existing = exists.scalar()
-
-    if existing:
-        if existing.role == "source":
-            await m.answer("⚠️ Этот канал уже добавлен как источник!", reply_markup=sources_menu_kb())
-        else:
-            await m.answer(
-                f"⚠️ Этот канал уже используется как {existing.role}!",
-                reply_markup=sources_menu_kb()
-            )
+    if not info:
+        await m.answer(
+            "❌ Не удалось подключиться к каналу.\n\n"
+            "Проверьте:\n"
+            "• Ссылка корректная\n"
+            "• Ссылка не истекла\n"
+            "• Канал существует",
+            reply_markup=sources_menu_kb()
+        )
         await state.clear()
         return
 
-    # Добавляем как source
-    source = Channel(
-        chat_id=chat_id,
+    # Проверяем, не добавлен ли уже
+    existing = await db.execute(
+        select(Channel).where(
+            Channel.chat_id == info["chat_id"],
+            Channel.role == "source"
+        )
+    )
+    if existing.scalars().first():
+        await m.answer(
+            f"⚠️ Канал <b>{info['title']}</b> уже добавлен как источник.",
+            reply_markup=sources_menu_kb(),
+            parse_mode="HTML"
+        )
+        await state.clear()
+        return
+
+    # Добавляем в БД
+    channel = Channel(
+        chat_id=info["chat_id"],
+        title=info["title"],
         role="source",
-        title=title or "",
         is_active=True
     )
-    db.add(source)
-    await db.commit()
-
-    # Сбрасываем кеш юзербота
-    userbot.invalidate_cache()
-
-    await state.clear()
-    await m.answer(
-        f"✅ <b>Источник добавлен!</b>\n\n"
-        f"Канал: {title or chat_id}\n"
-        f"ID: <code>{chat_id}</code>\n\n"
-        f"Новые посты будут форвардиться в инбокс.",
-        reply_markup=sources_menu_kb(),
-        parse_mode="HTML"
-    )
-
-
-# ─────────────────────────────────────────────────────────────
-# Детали источника
-# ─────────────────────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("src:view:"))
-async def view_source(c: CallbackQuery, db: AsyncSession):
-    source_id = int(c.data.split(":")[2])
-    source = await db.get(Channel, source_id)
-
-    if not source or source.role != "source":
-        await c.answer("Не найден", show_alert=True)
-        return
-
-    status = "✅ Активен" if source.is_active else "❌ Отключён"
-    name = source.title or str(source.chat_id)
-
-    await c.message.edit_text(
-        f"📢 <b>{name}</b>\n\n"
-        f"ID: <code>{source.chat_id}</code>\n"
-        f"Статус: {status}",
-        reply_markup=source_detail_kb(source_id, source.is_active),
-        parse_mode="HTML"
-    )
-    await c.answer()
-
-
-# ─────────────────────────────────────────────────────────────
-# Управление источником
-# ─────────────────────────────────────────────────────────────
-
-@router.callback_query(F.data.startswith("src:toggle:"))
-async def toggle_source(c: CallbackQuery, db: AsyncSession):
-    source_id = int(c.data.split(":")[2])
-    source = await db.get(Channel, source_id)
-
-    if not source or source.role != "source":
-        await c.answer("Не найден", show_alert=True)
-        return
-
-    source.is_active = not source.is_active
+    db.add(channel)
     await db.commit()
 
     # Сбрасываем кеш
     userbot.invalidate_cache()
 
-    status = "включён ✅" if source.is_active else "отключён ❌"
-    await c.answer(f"Мониторинг {status}", show_alert=True)
-
-    name = source.title or str(source.chat_id)
-    status_text = "✅ Активен" if source.is_active else "❌ Отключён"
-
-    await c.message.edit_text(
-        f"📢 <b>{name}</b>\n\n"
-        f"ID: <code>{source.chat_id}</code>\n"
-        f"Статус: {status_text}",
-        reply_markup=source_detail_kb(source_id, source.is_active),
+    await m.answer(
+        f"✅ Источник добавлен!\n\n"
+        f"<b>{info['title']}</b>\n"
+        f"<code>{info['chat_id']}</code>",
+        reply_markup=sources_menu_kb(),
         parse_mode="HTML"
     )
+    await state.clear()
 
 
-@router.callback_query(F.data.startswith("src:del:"))
-async def delete_source_confirm(c: CallbackQuery, db: AsyncSession):
-    source_id = int(c.data.split(":")[2])
-    source = await db.get(Channel, source_id)
+@router.callback_query(F.data.startswith("src:view:"))
+async def view_source(c: CallbackQuery, db: AsyncSession):
+    """Просмотр источника"""
+    channel_id = int(c.data.split(":")[2])
 
-    if not source or source.role != "source":
-        await c.answer("Не найден", show_alert=True)
+    channel = await db.get(Channel, channel_id)
+    if not channel:
+        await c.answer("Канал не найден", show_alert=True)
         return
 
-    name = source.title or str(source.chat_id)
+    status = "✅ Активен" if channel.is_active else "⏸ Приостановлен"
+
     await c.message.edit_text(
-        f"🗑 <b>Удалить источник?</b>\n\n{name}",
-        reply_markup=confirm_delete_kb(source_id),
+        f"📡 <b>{channel.title}</b>\n\n"
+        f"ID: <code>{channel.chat_id}</code>\n"
+        f"Статус: {status}",
+        reply_markup=source_actions_kb(channel.id, channel.is_active),
         parse_mode="HTML"
     )
     await c.answer()
 
 
-@router.callback_query(F.data.startswith("src:del_yes:"))
+@router.callback_query(F.data.startswith("src:toggle:"))
+async def toggle_source(c: CallbackQuery, db: AsyncSession):
+    """Вкл/выкл источник"""
+    channel_id = int(c.data.split(":")[2])
+
+    channel = await db.get(Channel, channel_id)
+    if not channel:
+        await c.answer("Канал не найден", show_alert=True)
+        return
+
+    channel.is_active = not channel.is_active
+    await db.commit()
+
+    userbot.invalidate_cache()
+
+    status = "✅ Активен" if channel.is_active else "⏸ Приостановлен"
+    await c.message.edit_text(
+        f"📡 <b>{channel.title}</b>\n\n"
+        f"ID: <code>{channel.chat_id}</code>\n"
+        f"Статус: {status}",
+        reply_markup=source_actions_kb(channel.id, channel.is_active),
+        parse_mode="HTML"
+    )
+    await c.answer("Статус изменён")
+
+
+@router.callback_query(F.data.startswith("src:delete:"))
 async def delete_source(c: CallbackQuery, db: AsyncSession):
-    source_id = int(c.data.split(":")[2])
+    """Удалить источник"""
+    channel_id = int(c.data.split(":")[2])
 
-    source = await db.get(Channel, source_id)
-    if source and source.role == "source":
-        await db.delete(source)
+    channel = await db.get(Channel, channel_id)
+    if channel:
+        await db.delete(channel)
         await db.commit()
-
-        # Сбрасываем кеш
         userbot.invalidate_cache()
 
-    await c.answer("✅ Удалено", show_alert=True)
-
-    # Показываем список
-    result = await db.execute(
-        select(Channel).where(Channel.role == "source").order_by(Channel.id.desc())
+    await c.message.edit_text(
+        "🗑 Источник удалён",
+        reply_markup=sources_menu_kb()
     )
-    sources = result.scalars().all()
+    await c.answer()
 
-    if not sources:
-        await c.message.edit_text(
-            "📋 <b>Источники</b>\n\nСписок пуст.",
-            reply_markup=sources_menu_kb(),
-            parse_mode="HTML"
-        )
-    else:
-        await c.message.edit_text(
-            f"📋 <b>Источники</b>\n\nВсего: {len(sources)}",
-            reply_markup=sources_list_kb(sources),
-            parse_mode="HTML"
-        )
+
+@router.callback_query(F.data == "src:back")
+async def back_to_sources(c: CallbackQuery):
+    """Назад к меню источников"""
+    await c.message.edit_text(
+        "📡 <b>Источники для мониторинга</b>\n\n"
+        "Юзербот следит за этими каналами.",
+        reply_markup=sources_menu_kb(),
+        parse_mode="HTML"
+    )
+    await c.answer()
+
+
+@router.callback_query(F.data == "src:main")
+async def back_to_main(c: CallbackQuery):
+    """Назад в главное меню"""
+    await c.message.edit_text(
+        "⚙️ <b>Админка</b>",
+        reply_markup=admin_menu_kb(),
+        parse_mode="HTML"
+    )
+    await c.answer()

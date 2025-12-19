@@ -13,6 +13,7 @@ from src.keyboards.ai_keyboard import (
     cancel_kb,
 )
 from src.keyboards.inline import admin_menu_kb
+from src.states.ai_states import AISettingsStates
 from src.utils.ai import (
     get_model,
     set_model,
@@ -25,15 +26,6 @@ from src.utils.ai import (
 )
 
 router = Router()
-
-
-# ─────────────────────────────────────────────────────────────
-# FSM состояния
-# ─────────────────────────────────────────────────────────────
-
-class AISettingsStates(StatesGroup):
-    wait_prompt = State()
-    wait_custom_model = State()  # Ожидание ввода своей модели
 
 
 # ─────────────────────────────────────────────────────────────

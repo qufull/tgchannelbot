@@ -2,60 +2,36 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
 def sources_menu_kb() -> InlineKeyboardMarkup:
+    """Меню источников"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Список источников", callback_data="src:list")],
-        [InlineKeyboardButton(text="➕ Добавить источник", callback_data="src:add")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="src:back_admin")],
+        [InlineKeyboardButton(text="📋 Список", callback_data="src:list")],
+        [InlineKeyboardButton(text="➕ Добавить", callback_data="src:add")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="src:main")],
     ])
 
 
-def sources_list_kb(sources: list, page: int = 0) -> InlineKeyboardMarkup:
+def sources_list_kb(sources: list) -> InlineKeyboardMarkup:
+    """Список источников"""
     buttons = []
-    per_page = 8
-    start = page * per_page
-    end = start + per_page
-
-    for src in sources[start:end]:
-        status = "✅" if src.is_active else "❌"
-        name = src.title or str(src.chat_id)
-        if len(name) > 25:
-            name = name[:22] + "..."
+    for src in sources:
+        status = "✅" if src.is_active else "⏸"
         buttons.append([
-            InlineKeyboardButton(text=f"{status} {name}", callback_data=f"src:view:{src.id}")
+            InlineKeyboardButton(
+                text=f"{status} {src.title}",
+                callback_data=f"src:view:{src.id}"
+            )
         ])
 
-    # Пагинация
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"src:page:{page - 1}"))
-    if end < len(sources):
-        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"src:page:{page + 1}"))
-    if nav:
-        buttons.append(nav)
-
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="src:menu")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="src:back")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def source_detail_kb(source_id: int, is_active: bool) -> InlineKeyboardMarkup:
-    toggle = "❌ Отключить" if is_active else "✅ Включить"
+def source_actions_kb(channel_id: int, is_active: bool) -> InlineKeyboardMarkup:
+    """Действия с источником"""
+    toggle_text = "⏸ Приостановить" if is_active else "▶️ Включить"
+
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=toggle, callback_data=f"src:toggle:{source_id}")],
-        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"src:del:{source_id}")],
-        [InlineKeyboardButton(text="◀️ К списку", callback_data="src:list")],
-    ])
-
-
-def confirm_delete_kb(source_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Да", callback_data=f"src:del_yes:{source_id}"),
-            InlineKeyboardButton(text="❌ Нет", callback_data=f"src:view:{source_id}"),
-        ]
-    ])
-
-
-def cancel_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="src:menu")]
+        [InlineKeyboardButton(text=toggle_text, callback_data=f"src:toggle:{channel_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"src:delete:{channel_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="src:list")],
     ])

@@ -11,9 +11,12 @@ from src.handlers import router
 from src.userbot.client import userbot
 from src.utils.config import settings
 from src.utils.middlewares import DataBaseMiddleware, AdminOnlyMiddleware
-from src.utils.db import session as db_session, create_tables, close_db
+from src.utils.db import create_tables, close_db, async_session_maker
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -41,11 +44,16 @@ async def main():
 
     dp = Dispatcher(storage=MemoryStorage())
 
-    dp.update.middleware(DataBaseMiddleware(db_session))
+    dp.update.middleware(DataBaseMiddleware(async_session_maker))
     dp.update.middleware(AdminOnlyMiddleware())
     dp.include_router(router)
 
-    userbot_task = asyncio.create_task(start_userbot())
+    userbot_task = None
+    if settings.userbot_enabled:
+        userbot_task = asyncio.create_task(start_userbot())
+    else:
+        logger.warning("Userbot not configured (API_ID/API_HASH/PHONE missing)")
+
 
     try:
         await dp.start_polling(bot)
@@ -54,9 +62,11 @@ async def main():
     except KeyError as e:
         logger.error(e)
     finally:
-        await bot.session.close()
-        await userbot.stop()
+        if userbot_task:
+            userbot_task.cancel()
+            await userbot.stop()
         await close_db()
+        await bot.session.close()
 
 if __name__ == '__main__':
     asyncio.run(main())

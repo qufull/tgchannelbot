@@ -1,6 +1,14 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
+"""
+src/keyboards/inline.py
+Клавиатуры для постов
+"""
+
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+
 def admin_menu_kb() -> InlineKeyboardMarkup:
     """Главное меню админки"""
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -12,6 +20,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
 
 
 def rewrite_modes_kb(post_id: int) -> InlineKeyboardMarkup:
+    """Выбор режима переписывания"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Стандартный", callback_data=f"p:{post_id}:rw:std")],
         [InlineKeyboardButton(text="✂️ Короткий", callback_data=f"p:{post_id}:rw:short")],
@@ -21,10 +30,26 @@ def rewrite_modes_kb(post_id: int) -> InlineKeyboardMarkup:
 
 
 def post_actions_kb(post_id: int) -> InlineKeyboardMarkup:
+    """Действия с новым постом"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="✍️ Переписать", callback_data=f"p:{post_id}:rewrite"),
             InlineKeyboardButton(text="🗑 Удалить", callback_data=f"p:{post_id}:delete"),
+        ]
+    ])
+
+
+def preview_actions_kb(post_id: int) -> InlineKeyboardMarkup:
+    """Действия с превью переписанного поста"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📤 Опубликовать", callback_data=f"p:{post_id}:publish"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data=f"p:{post_id}:cancel"),
         ],
-        [InlineKeyboardButton(text="📤 Опубликовать", callback_data=f"p:{post_id}:publish")],
+        [InlineKeyboardButton(text="🔄 Переписать ещё", callback_data=f"p:{post_id}:rewrite")],
+    ])
+
+def start_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Админка", callback_data="adm:menu")]
     ])
