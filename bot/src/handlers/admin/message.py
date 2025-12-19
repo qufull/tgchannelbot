@@ -1,4 +1,4 @@
-from aiogram import Router, Bot
+from aiogram import Router, Bot, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
@@ -7,7 +7,8 @@ from aiogram.types import (
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.keyboards.inline import admin_menu_kb, start_kb
+from src.keyboards.inline import admin_menu_kb
+from src.keyboards.reply import start_kb
 from src.models.channel import Channel
 from src.states.admin_states import AdminStates
 from src.utils.utils import extract_forwarded_channel_id
@@ -21,7 +22,8 @@ async def start(m: Message):
     await m.answer("Я готов. Команды: /admin", reply_markup=start_kb())
 
 
-@router.message(Command("admin"))
+
+@router.message(F.text == "⚙️ Админка")
 async def admin(m: Message):
     await m.answer("Админка:", reply_markup=admin_menu_kb())
 

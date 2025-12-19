@@ -31,30 +31,27 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-def clean_ai_markdown_links(text: str) -> str:
-    """
-    Убирает markdown ссылки которые генерирует AI.
-    Применяется ТОЛЬКО к переписанному тексту.
-    """
+def normalize_ai_text(text: str) -> str:
+    """Делает текст похожим на обычный телеграм-пост: без ** и без [текст](url)"""
     if not text:
-        return text
+        return ""
 
-    # [текст](url) → текст
-    text = re.sub(r'\[([^\]]+)\]\(https?://[^)]+\)', r'\1', text)
+    t = text.strip()
 
-    # [слово]https://... → слово (без пробела)
-    text = re.sub(r'\[([^\]]+)\]https?://\S+', r'\1', text)
+    # **жирный** -> жирный
+    t = re.sub(r"\*\*(.*?)\*\*", r"\1", t)
 
-    # [слово] https://... → слово (с пробелом)
-    text = re.sub(r'\[([^\]]+)\]\s+https?://\S+', r'\1', text)
+    # [текст](url) -> текст\nurl
+    t = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1\n\2", t)
 
-    # Оставшиеся [слово] перед URL на новой строке
-    text = re.sub(r'\[([^\]]+)\]\n\s*https?://\S+', r'\1', text)
+    # [текст] url  или [текст]url -> текст\nurl
+    t = re.sub(r"\[([^\]]+)\]\s*(https?://\S+)", r"\1\n\2", t)
 
-    # Просто [слово] без ссылки — убираем скобки
-    text = re.sub(r'\[([^\]]+)\](?!\()', r'\1', text)
+    # остатки [слово] -> слово
+    t = re.sub(r"\[([^\]]+)\](?!\()", r"\1", t)
 
-    return text
+    return t
+
 
 
 def has_real_file(msg) -> bool:
@@ -67,15 +64,18 @@ def has_real_file(msg) -> bool:
     return bool(msg.photo or msg.video or msg.document or msg.audio or msg.voice)
 
 
-async def delete_preview(bot: Bot, user_id: int, state: FSMContext):
-    """Удаляет все сообщения превью"""
+async def delete_preview(bot: Bot, user_id: int, state: FSMContext, skip_msg_id: int | None = None):
     data = await state.get_data()
     preview_msg_ids = data.get("preview_msg_ids", [])
+    control_msg_ids = data.get("control_msg_ids", [])
 
-    for msg_id in preview_msg_ids:
+    for msg_id in list(dict.fromkeys(preview_msg_ids + control_msg_ids)):
+        if skip_msg_id and msg_id == skip_msg_id:
+            continue
         await safe_delete_message(bot, user_id, msg_id)
 
-    await state.update_data(preview_msg_ids=[])
+    await state.update_data(preview_msg_ids=[], control_msg_ids=[])
+
 
 
 @router.callback_query(F.data.startswith("adm:"))
@@ -141,6 +141,49 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
     post_id = int(parts[1])
     action = parts[2]
 
+    if action == "open":
+        admin_id = c.from_user.id
+        notify_msg_id = c.message.message_id
+
+        await c.answer()
+
+        # чистим любой старый UI
+        await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
+
+        # удаляем само уведомление
+        await safe_delete_message(bot, admin_id, notify_msg_id)
+
+        post = await db.get(Post, post_id)
+        if not post:
+            await bot.send_message(admin_id, f"❌ Пост #{post_id} не найден")
+            return
+
+        media_items = (await db.execute(
+            select(MediaItem).where(MediaItem.post_id == post_id).order_by(MediaItem.sort_index.asc())
+        )).scalars().all()
+        has_media = bool(media_items)
+
+        preview_ids = await send_preview_via_bot(
+            bot=bot,
+            admin_id=admin_id,
+            text=(post.original_text or "").strip(),
+            source_chat_id=post.source_chat_id,
+            source_message_id=post.source_message_id,
+            has_media=has_media
+        )
+        await state.update_data(preview_msg_ids=preview_ids)
+
+        anchor = preview_ids[0] if preview_ids else None
+        ctrl = await bot.send_message(
+            admin_id,
+            "👆 <b>Оригинальный пост</b>\n\nВыберите действие:",
+            reply_markup=post_actions_kb(post_id),
+            parse_mode="HTML",
+            reply_to_message_id=anchor
+        )
+        await state.update_data(control_msg_ids=[ctrl.message_id])
+        return
+
     # ─────────────────────────────────────────────────────────────
     # ВЫБОР РЕЖИМА ПЕРЕПИСЫВАНИЯ
     # ─────────────────────────────────────────────────────────────
@@ -175,7 +218,7 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
         async def job():
             try:
                 # Удаляем старое превью
-                await delete_preview(bot, admin_id, state)
+                await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
 
                 # Удаляем сообщение с кнопками
                 await safe_delete_message(bot, admin_id, buttons_msg_id)
@@ -188,8 +231,7 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
 
                     # Переписываем
                     rewritten = await rewrite_text(post.original_text or "", mode)
-                    # Очищаем ТОЛЬКО переписанный текст от markdown ссылок
-                    rewritten = clean_ai_markdown_links(rewritten.strip())
+                    rewritten = normalize_ai_text(rewritten)
 
                     # Сохраняем переписанный текст
                     post.rewritten_text = rewritten
@@ -235,7 +277,7 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
     # ─────────────────────────────────────────────────────────────
     if action == "delete":
         # Удаляем превью
-        await delete_preview(bot, c.from_user.id, state)
+        await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
 
         # Удаляем пост из БД
         post = await db.get(Post, post_id)
@@ -290,7 +332,7 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
 
         if success:
             # Удаляем превью
-            await delete_preview(bot, c.from_user.id, state)
+            await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
 
             # Удаляем пост из БД
             await db.delete(post)
@@ -309,7 +351,7 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
     # ─────────────────────────────────────────────────────────────
     if action == "cancel":
         # Удаляем превью
-        await delete_preview(bot, c.from_user.id, state)
+        await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
 
         # Удаляем текущее сообщение с кнопками
         await safe_delete_message(bot, c.from_user.id, c.message.message_id)
@@ -380,11 +422,11 @@ async def send_preview_via_bot(bot: Bot, admin_id: int, text: str, source_chat_i
                             input_file = BufferedInputFile(file_bytes, filename=f"media_{i}")
 
                             if m.photo:
-                                media_group.append(InputMediaPhoto(media=input_file, caption=caption, parse_mode="HTML"))
+                                media_group.append(InputMediaPhoto(media=input_file, caption=caption))
                             elif m.video:
-                                media_group.append(InputMediaVideo(media=input_file, caption=caption, parse_mode="HTML"))
+                                media_group.append(InputMediaVideo(media=input_file, caption=caption))
                             else:
-                                media_group.append(InputMediaDocument(media=input_file, caption=caption, parse_mode="HTML"))
+                                media_group.append(InputMediaDocument(media=input_file, caption=caption))
 
                     if media_group:
                         result = await bot.send_media_group(admin_id, media_group)
@@ -392,7 +434,7 @@ async def send_preview_via_bot(bot: Bot, admin_id: int, text: str, source_chat_i
 
                         if text and len(text) > 1024:
                             text_msg = await bot.send_message(
-                                admin_id, text, parse_mode="HTML", disable_web_page_preview=True
+                                admin_id, text, disable_web_page_preview=True
                             )
                             msg_ids.append(text_msg.message_id)
 
@@ -406,17 +448,18 @@ async def send_preview_via_bot(bot: Bot, admin_id: int, text: str, source_chat_i
                     caption = text[:1024] if text else None
 
                     if msg.photo:
-                        result = await bot.send_photo(admin_id, input_file, caption=caption, parse_mode="HTML")
+                        result = await bot.send_photo(admin_id, input_file, caption=caption)
                     elif msg.video:
-                        result = await bot.send_video(admin_id, input_file, caption=caption, parse_mode="HTML")
+                        result = await bot.send_video(admin_id, input_file, caption=caption)
                     else:
-                        result = await bot.send_document(admin_id, input_file, caption=caption, parse_mode="HTML")
+                        result = await bot.send_document(admin_id, input_file, caption=caption)
 
                     msg_ids.append(result.message_id)
 
-                    if text and len(text) > 1024:
+                    tail = text[1024:].strip() if text and len(text) > 1024 else ""
+                    if tail:
                         text_msg = await bot.send_message(
-                            admin_id, text, parse_mode="HTML", disable_web_page_preview=True
+                            admin_id, tail, disable_web_page_preview=True
                         )
                         msg_ids.append(text_msg.message_id)
 
@@ -425,7 +468,7 @@ async def send_preview_via_bot(bot: Bot, admin_id: int, text: str, source_chat_i
         # Только текст
         if text:
             result = await bot.send_message(
-                admin_id, text, parse_mode="HTML", disable_web_page_preview=True
+                admin_id, text, disable_web_page_preview=True
             )
             msg_ids.append(result.message_id)
 

@@ -49,7 +49,11 @@ def preview_actions_kb(post_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔄 Переписать ещё", callback_data=f"p:{post_id}:rewrite")],
     ])
 
-def start_kb() -> InlineKeyboardMarkup:
+def new_post_notice_kb(post_id: int) -> InlineKeyboardMarkup:
+    """Кнопки на уведомлении о новом посте (без превью)"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚙️ Админка", callback_data="adm:menu")]
+        [
+            InlineKeyboardButton(text="📌 К посту", callback_data=f"p:{post_id}:open"),
+            InlineKeyboardButton(text="🗑 Удалить", callback_data=f"p:{post_id}:delete"),
+        ]
     ])

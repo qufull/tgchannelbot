@@ -11,6 +11,7 @@ from telethon.tl.types import Channel as TelethonChannel, Message, MessageMediaW
 
 from sqlalchemy import select, update
 
+from src.keyboards.inline import new_post_notice_kb
 from src.models.channel import Channel
 from src.models.media_item import MediaItem
 from src.models.post import Post
@@ -245,7 +246,7 @@ class ChannelMonitor:
                 await self._bot.send_message(
                     admin_id,
                     msg,
-                    reply_markup=post_actions_kb(post_id),
+                    reply_markup=new_post_notice_kb(post_id),
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
