@@ -1,5 +1,13 @@
-from sqlalchemy.orm import   Mapped, mapped_column, relationship
-from sqlalchemy import String, Text, Integer, BigInteger, DateTime,  func, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import (
+    String,
+    Text,
+    Integer,
+    BigInteger,
+    DateTime,
+    func,
+    UniqueConstraint,
+)
 
 from src.utils.db import Base
 
@@ -14,16 +22,32 @@ class Post(Base):
     media_group_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     original_text: Mapped[str] = mapped_column(Text, default="")
-    rewritten_text: Mapped[str] = mapped_column(Text, nullable=True)
+    rewritten_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    notified: Mapped[int] = mapped_column(Integer, default=0)  # 0/1
+    notified: Mapped[int] = mapped_column(Integer, default=0)
 
-    created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    preview_msg_ids: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="JSON list of preview message_ids sent to admins"
+    )
+    control_msg_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, comment="Message ID with inline buttons"
+    )
+
+    created_at: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
     media_items: Mapped[list["MediaItem"]] = relationship(
-        back_populates="post", cascade="all, delete-orphan", order_by="MediaItem.sort_index"
+        back_populates="post",
+        cascade="all, delete-orphan",
+        order_by="MediaItem.sort_index",
     )
 
     __table_args__ = (
-        UniqueConstraint("source_chat_id", "media_group_id", name="uq_post_group", sqlite_on_conflict="IGNORE"),
+        UniqueConstraint(
+            "source_chat_id",
+            "media_group_id",
+            name="uq_post_group",
+            sqlite_on_conflict="IGNORE",
+        ),
     )

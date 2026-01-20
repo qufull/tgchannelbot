@@ -43,8 +43,10 @@ class UserBot:
         )
 
         await self.client.start(phone=settings.PHONE)
+
         logger.info("Userbot connected")
 
+        monitor.set_client(self.client)
         self.client.add_event_handler(
             self._on_new_message,
             events.NewMessage()

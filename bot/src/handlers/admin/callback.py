@@ -4,13 +4,14 @@ src/handlers/admin/callback.py
 """
 
 import asyncio
+import json
 import logging
 
 from aiogram import Router, Bot, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, BufferedInputFile, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.keyboards.admin_channels import sources_menu_kb
@@ -46,8 +47,6 @@ async def delete_preview(bot: Bot, user_id: int, state: FSMContext, skip_msg_id:
     control_msg_ids = data.get("control_msg_ids", [])
 
     for msg_id in list(dict.fromkeys(preview_msg_ids + control_msg_ids)):
-        if skip_msg_id and msg_id == skip_msg_id:
-            continue
         await safe_delete_message(bot, user_id, msg_id)
 
     await state.update_data(preview_msg_ids=[], control_msg_ids=[])
@@ -186,18 +185,18 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
             await c.answer("ANTHROPIC_API_KEY не задан", show_alert=True)
             return
 
-        await c.answer("⏳ Переписываю...")
-
         admin_id = c.from_user.id
         buttons_msg_id = c.message.message_id
 
+        # ✅ СРАЗУ удаляем сообщение с выбором режима (чтобы не висело)
+        await safe_delete_message(bot, admin_id, buttons_msg_id)
+
+        await c.answer("⏳ Переписываю...")
+
         async def job():
             try:
-                # Удаляем старое превью
-                await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
-
-                # Удаляем сообщение с кнопками
-                await safe_delete_message(bot, admin_id, buttons_msg_id)
+                # 1) Чистим старые превью (если они были из open-режима)
+                await delete_preview(bot, admin_id, state)
 
                 async with session() as s:
                     post = await s.get(Post, post_id)
@@ -205,22 +204,21 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
                         await bot.send_message(admin_id, f"❌ Пост #{post_id} не найден")
                         return
 
-                    # Переписываем
+                    # 2) Переписываем
                     rewritten = await rewrite_text(post.original_text or "", mode)
                     rewritten = md_to_html(rewritten)
 
-                    # Сохраняем переписанный текст
                     post.rewritten_text = rewritten
                     await s.commit()
 
-                    # Получаем медиа
+                    # 3) Медиа
                     media_result = await s.execute(
                         select(MediaItem).where(MediaItem.post_id == post_id).order_by(MediaItem.sort_index.asc())
                     )
                     media_items = media_result.scalars().all()
                     has_media = bool(media_items)
 
-                    # Отправляем НОВОЕ превью с ПЕРЕПИСАННЫМ текстом
+                    # 4) Отправляем превью переписанного
                     new_preview_ids = await send_preview_via_bot(
                         bot,
                         admin_id,
@@ -229,17 +227,16 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
                         post.source_message_id,
                         has_media
                     )
-
-                    # Сохраняем ID нового превью
                     await state.update_data(preview_msg_ids=new_preview_ids)
 
-                    # Отправляем кнопки
-                    await bot.send_message(
+                    # 5) Кнопки publish/cancel
+                    ctrl = await bot.send_message(
                         admin_id,
                         "👆 <b>Превью переписанного поста</b>\n\nОпубликовать?",
                         reply_markup=preview_actions_kb(post_id),
                         parse_mode="HTML"
                     )
+                    await state.update_data(control_msg_ids=[ctrl.message_id])
 
             except Exception as e:
                 logger.exception(f"Rewrite job error: {e}")
@@ -252,18 +249,25 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
     # УДАЛИТЬ
     # ─────────────────────────────────────────────────────────────
     if action == "delete":
-        # Удаляем превью
-        await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
-
-        # Удаляем пост из БД
         post = await db.get(Post, post_id)
         if post:
+            # 🔥 удалить превью поста
+            if post.preview_msg_ids:
+                for mid in json.loads(post.preview_msg_ids):
+                    await safe_delete_message(bot, c.from_user.id, int(mid))
+
+            # 🔥 удалить кнопки
+            if post.control_msg_id:
+                await safe_delete_message(bot, c.from_user.id, post.control_msg_id)
+
+            # 🔥 удалить медиа из БД
+            await db.execute(delete(MediaItem).where(MediaItem.post_id == post_id))
+
+            # 🔥 удалить сам пост
             await db.delete(post)
             await db.commit()
 
-        # Удаляем сообщение с кнопками
         await safe_delete_message(bot, c.from_user.id, c.message.message_id)
-
         await c.answer("🗑 Удалено")
         return
 
@@ -307,19 +311,34 @@ async def post_callbacks(c: CallbackQuery, bot: Bot, db: AsyncSession, state: FS
         )
 
         if success:
-            # Удаляем превью
-            await delete_preview(bot, c.from_user.id, state, skip_msg_id=c.message.message_id)
+            admin_id = c.from_user.id
 
-            # Удаляем пост из БД
+            # 1) удалить превью поста (сообщения, которые бот прислал админу)
+            if post.preview_msg_ids:
+                try:
+                    for mid in json.loads(post.preview_msg_ids):
+                        await safe_delete_message(bot, admin_id, int(mid))
+                except Exception as e:
+                    logger.error(f"Failed to delete preview msgs for post #{post_id}: {e}")
+
+            # 2) удалить сообщение с кнопками "Выберите действие" (которое создал monitor)
+            if post.control_msg_id:
+                await safe_delete_message(bot, admin_id, int(post.control_msg_id))
+
+            # 3) удалить возможные FSM-превью (переписанный вариант), если было
+            await delete_preview(bot, admin_id, state)
+
+            # 4) удалить текущее сообщение callback (на всякий случай)
+            await safe_delete_message(bot, admin_id, c.message.message_id)
+
+            # 5) удалить пост из БД (media_items удалятся каскадом, но можно оставить как есть)
             await db.delete(post)
             await db.commit()
-
-            # Удаляем сообщение с кнопками
-            await safe_delete_message(bot, c.from_user.id, c.message.message_id)
 
             await c.answer("✅ Опубликовано!")
         else:
             await c.answer("❌ Ошибка публикации", show_alert=True)
+
         return
 
     # ─────────────────────────────────────────────────────────────
