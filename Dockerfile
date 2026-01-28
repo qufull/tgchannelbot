@@ -3,7 +3,7 @@ FROM python:3.14-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-WORKDIR /app
+WORKDIR /app/bot
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
